@@ -1,0 +1,213 @@
+---
+title: "Practical Machine Learning Project"
+author: "Darrell Hill"
+date: "May 24, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Overview
+
+Fitness tools like Jawbone Up, Nike FuelBand, and Fitbit make it possible to collect a large amount of data about fitness activity relatively inexpensively.  As a result, people can see what they are doing and understand a lot more about how long it takes them do it.  But they don't know how well they are doing it.  So this project is to evaluate performance from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants.  They did the exercise correctly and incorrectly 5 different ways.
+
+The goal is to predict the manner in which they did the exercise ("classe" variable).  This report walks through how the model was built, how cross validation was used, predicted sample error, and explain why decisions were made.  Then we will predict 20 test cases.
+
+##Loading the Libraries
+
+```{r}
+if ( !require(MASS     ) ) { install.packages('MASS');      library(MASS)      }
+if ( !require(tidyverse) ) { install.packages('tidyverse'); library(tidyverse) }
+if ( !require(broom    ) ) { install.packages('broom');     library(broom)     }
+if ( !require(caret    ) ) { install.packages('caret');     library(caret)     }
+if ( !require(rpart    ) ) { install.packages('rpart');     library(rpart)     }
+if ( !require(randomForest    ) ) { install.packages('randomForest');     library(randomForest)     }
+if ( !require(rpart.plot    ) ) { install.packages('rpart.plot');     library(rpart.plot)     }
+if ( !require(repmis    ) ) { install.packages('repmis');     library(repmis)     }
+if ( !require(rattle    ) ) { install.packages('rattle');     library(rattle)     }
+if ( !require(corrplot    ) ) { install.packages('corrplot');     library(corrplot)     }
+if ( !require(gbm    ) ) { install.packages('gbm');     library(gbm)     }
+if ( !require(e1071    ) ) { install.packages('e1071');     library(e1071)     }
+```
+
+##Loading the Data
+Here we load the training and test variables.  The test variable is used to validate the model.
+```{r}
+TrainingData <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),header=TRUE)
+str(TrainingData)
+TestingData  <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"),header=TRUE)
+str(TestingData)
+```
+
+There are 160 variables.  The training data has 19622 observations.  The testing data has 20 observations (to do the predictions).
+
+##Cleaning the Data
+
+Since there are a lot of NAs, we should remove them to ensure the models are as accurate as possible and run correctly.
+```{r}
+CleanTrainData  <-  TrainingData[, colSums(is.na(TrainingData)) == 0]
+CleanTestData  <-  TestingData[, colSums(is.na(TestingData)) == 0]
+dim(CleanTrainData)
+dim(CleanTestData)
+```
+Cleaning the data leaves us with 93 variables left over out of the 19622 observations in the training data set and 60 variables left over in the testing data set.
+
+We remove the first 7 variables because of a lack of impact on classe.
+```{r}
+CleanTrainData  <-  CleanTrainData[, -c(1:7)]
+CleanTestData  <-  CleanTestData[, -c(1:7)]
+```
+That leaves us with 86 variables of the clean training data set and 53 variables/columns of the test data set.
+
+##Data Prediction Prep
+
+I'll be setting up the data in to a rough 2/3 split of 65% training data and 35% testing data.  Splitting it up makes it possible to calculate out-of-sample errors too.
+
+```{r}
+set.seed(1234) 
+TrainSet <- createDataPartition(CleanTrainData$classe, p = 0.65, list = FALSE)
+WithinTrainingData <- CleanTrainData[TrainSet, ]
+WithinTestData <- CleanTrainData[-TrainSet, ]
+dim(WithinTrainingData)
+dim(WithinTestData)
+
+```
+
+This leaves us with 12757 observations in the training set and 6865 in the test data set.  
+
+Removing variables/columns that have near-zero variance will also help to further get the data ready to to prediction analysis.
+
+```{r}
+nearZeroVar <- nearZeroVar(WithinTrainingData)
+WithinTrainingData <- WithinTrainingData[, -nearZeroVar]
+WithinTestData  <- WithinTestData[, -nearZeroVar]
+dim(WithinTrainingData)
+
+```
+Within Training data set has 53 variables/columns.
+
+##Correlation Plot
+
+The Corrplot package has several options to selection to see which variables that have relationships to each other and how they are graphed.  The type is set to the default of "full", and by seeing the colors using square it shows relationships easier. The order is set to for first principle component (FPC).
+
+```{r}
+correlation_matrix <- cor(WithinTrainingData[, -53])
+corrplot(correlation_matrix, order = "FPC", method = "square", type = "full", 
+         tl.cex = 0.7, tl.col = rgb(0, 0, 0))
+
+```
+
+Some relationships that are highly negatively correlated include roll_belt with accel_belt_z; total_accel_belt with accel_arm_y; and others.  There are many variables which show positive and negative correlations based on natural expected relationships.
+
+While that provided a good graphical relationship of the variables to see how they all relate to each other, below is an easy way to see what those are.  We find 20, as follows:
+
+```{r}
+CorrelatedVariables = findCorrelation(correlation_matrix, cutoff=0.7)
+names(WithinTrainingData)[CorrelatedVariables]
+```
+
+##Testing the Models
+
+In the following sections, we will test 3 different modeling techniques to see how well they perfor: classification tree, random forest, and gradient boosting method (GBM).
+
+Cross-validating our performance of the different techniques will help prevent overfitting of the models.  We will use K-Fold validation of 10 times to ensure it is accurate and the data set is small enough that the computer can easily handle the extra processing necessary to test the models.
+
+##Classification Tree
+
+First we will train the classification tree.
+
+```{r}
+ClassTrain <- trainControl(method="cv", number=10)
+ClassTreeModel <- train(classe~., data=WithinTrainingData, method="rpart", trControl=ClassTrain)
+#Graph the model to see what it looks like
+fancyRpartPlot(ClassTreeModel$finalModel)
+```
+
+We see the data is partitioned by the roll belt < 131, pitch forarm <-.34, magnet dummbell y < 427, and roll forearm <124.
+
+```{r}
+ClassTreePred <- predict(ClassTreeModel,newdata=WithinTestData)
+ClassTreeConfusionMatrix <- confusionMatrix(WithinTestData$classe, ClassTreePred)
+ClassTreeConfusionMatrix
+```
+
+```{r}
+ClassTreeConfusionMatrix$overall[1]
+```
+We see the accuracy is only approximately 50%.
+
+```{r}
+plot(ClassTreeConfusionMatrix$table, col = ClassTreeConfusionMatrix$byClass, 
+     main = paste("Decision Tree Accuracy=", round(ClassTreeConfusionMatrix$overall['Accuracy'], 4)))
+
+```
+The out of sample error rate of .5 is high.
+
+##Random Forest 
+Now we will train the random forest model to see how it does.
+
+```{r}
+RandomForestControl <- trainControl(method="cv", number=3, verboseIter=FALSE)
+RandomForestModel <- train(classe ~ ., data=WithinTrainingData, method="rf", trControl=RandomForestControl)
+RandomForestModel$finalModel
+
+```
+
+When we validate the model, we see class error more often in B and D.
+
+```{r}
+RandomForestPred <- predict(RandomForestModel, newdata=WithinTestData)
+RandomForestConfusionMatrix <- confusionMatrix(RandomForestPred, WithinTestData$classe)
+RandomForestConfusionMatrix
+#Plotting the model to cross-validate it
+plot(RandomForestModel)
+```
+The accuracy is 99%.  This seems like a bit too high.  
+
+```{r}
+plot(RandomForestConfusionMatrix$table, col = RandomForestConfusionMatrix$byClass, main = paste("Random Forest Confusion Matrix Accuracy is", round(RandomForestConfusionMatrix$overall['Accuracy'], 4)))
+```
+
+##Generalized Boosted Regression Modeling (GBM)
+
+We set the seed again to ensure the results are consistent each time we run it.  We'll run it 5 times.
+
+```{r}
+set.seed(1234)
+GBM_Control <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+GBM_Model  <- train(classe ~ ., data=WithinTrainingData, method = "gbm", trControl = GBM_Control, verbose = FALSE)
+GBM_Model$finalModel
+
+```
+There were 52 predictors found and 43 that were not predictors.
+
+```{r}
+GBM_Model
+```
+
+The depth at 3 levels with 150 trees has a very high accuracy of 96%.
+
+
+
+```{r}
+GBM_predictions <- predict(GBM_Model, newdata=WithinTestData)
+GBM_ConfusionMatrix <- confusionMatrix(GBM_predictions, WithinTestData$classe)
+GBM_ConfusionMatrix
+
+```
+
+The cross-validated results of the GBM model get an accuracy rate of 96.3%.  The 95% confidence interval is between 95.8% and 96.7%.
+
+##Conclusion
+
+The Random Forest Model is the best performing model.  Using it on the cleaned validation data gets:
+```{r}
+Results <- predict(RandomForestModel, newdata=CleanTestData)
+Results
+```
+
+
+
+
